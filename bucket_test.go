@@ -1,6 +1,7 @@
 package bolt_test
 
 import (
+	bolt "boltdb"
 	"bytes"
 	"encoding/binary"
 	"errors"
@@ -13,7 +14,7 @@ import (
 	"testing"
 	"testing/quick"
 
-	"github.com/boltdb/bolt"
+	//"github.com/boltdb/bolt"
 )
 
 // Ensure that a bucket that gets a non-existent key returns nil.

@@ -1,13 +1,14 @@
 package bolt_test
 
 import (
+	bolt "boltdb"
 	"bytes"
 	"fmt"
 	"math/rand"
 	"sync"
 	"testing"
 
-	"github.com/boltdb/bolt"
+	//"github.com/boltdb/bolt"
 )
 
 func TestSimulate_1op_1p(t *testing.T)     { testSimulate(t, 1, 1) }

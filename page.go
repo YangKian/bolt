@@ -50,12 +50,15 @@ func (p *page) typ() string {
 }
 
 // meta returns a pointer to the metadata section of the page.
+// 返回指向页面中元数据段的指针
 func (p *page) meta() *meta {
 	return (*meta)(unsafe.Pointer(&p.ptr))
 }
 
 // leafPageElement retrieves the leaf node by index
 func (p *page) leafPageElement(index uint16) *leafPageElement {
+	// 0x7FFFFFF = MaxInt32
+	// 将指针转换为 leafPageElement 类型的数组，然后再取索引
 	n := &((*[0x7FFFFFF]leafPageElement)(unsafe.Pointer(&p.ptr)))[index]
 	return n
 }
@@ -69,11 +72,13 @@ func (p *page) leafPageElements() []leafPageElement {
 }
 
 // branchPageElement retrieves the branch node by index
+// 提取指定索引的 branch 节点页
 func (p *page) branchPageElement(index uint16) *branchPageElement {
 	return &((*[0x7FFFFFF]branchPageElement)(unsafe.Pointer(&p.ptr)))[index]
 }
 
 // branchPageElements retrieves a list of branch nodes.
+// 提取所有的 branch 节点页
 func (p *page) branchPageElements() []branchPageElement {
 	if p.count == 0 {
 		return nil

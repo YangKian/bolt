@@ -13,7 +13,7 @@ type node struct {
 	isLeaf     bool
 	unbalanced bool
 	spilled    bool
-	key        []byte
+	key        []byte // 用于保存节点中存储的第一个键值对的键
 	pgid       pgid
 	parent     *node
 	children   nodes
@@ -29,6 +29,7 @@ func (n *node) root() *node {
 }
 
 // minKeys returns the minimum number of inodes this node should have.
+// 叶节点至少要有一个键，内部节点至少要有两个键
 func (n *node) minKeys() int {
 	if n.isLeaf {
 		return 1
@@ -112,7 +113,7 @@ func (n *node) prevSibling() *node {
 	return n.parent.childAt(index - 1)
 }
 
-// put inserts a key/value.
+// put inserts a key/value. 实际上是更新操作，旧键存在则更新旧键，旧键不存在则插入新键。插入是按照键排序的
 func (n *node) put(oldKey, newKey, value []byte, pgid pgid, flags uint32) {
 	if pgid >= n.bucket.tx.meta.pgid {
 		panic(fmt.Sprintf("pgid (%d) above high water mark (%d)", pgid, n.bucket.tx.meta.pgid))
@@ -128,10 +129,12 @@ func (n *node) put(oldKey, newKey, value []byte, pgid pgid, flags uint32) {
 	// Add capacity and shift nodes if we don't have an exact match and need to insert.
 	exact := (len(n.inodes) > 0 && index < len(n.inodes) && bytes.Equal(n.inodes[index].key, oldKey))
 	if !exact {
+		// 没有找到旧键，则对新键执行插入操作，需要先对数组内的元素进行移动
 		n.inodes = append(n.inodes, inode{})
 		copy(n.inodes[index+1:], n.inodes[index:])
 	}
 
+	// 旧键存在，则使用新键的键值对覆盖旧键的键值对
 	inode := &n.inodes[index]
 	inode.flags = flags
 	inode.key = newKey
@@ -158,16 +161,18 @@ func (n *node) del(key []byte) {
 }
 
 // read initializes the node from a page.
+// 使用页来初始化一个结点
 func (n *node) read(p *page) {
-	n.pgid = p.id
+	n.pgid = p.id // 设置结点的 pgid
 	n.isLeaf = ((p.flags & leafPageFlag) != 0)
+	// 页中的每个元素都构造成一个内部节点来表示
 	n.inodes = make(inodes, int(p.count))
 
 	for i := 0; i < int(p.count); i++ {
-		inode := &n.inodes[i]
+		inode := &n.inodes[i] // 引用类型，可以直接修改内部节点
 		if n.isLeaf {
 			elem := p.leafPageElement(uint16(i))
-			inode.flags = elem.flags
+			inode.flags = elem.flags // 节点的类型
 			inode.key = elem.key()
 			inode.value = elem.value()
 		} else {
@@ -207,14 +212,19 @@ func (n *node) write(p *page) {
 	}
 
 	// Loop over each item and write it to the page.
+	// 将空间分成了两部分：|pageElements数组|data数组|，切片 b 指向的是 data 数组部分的开头
 	b := (*[maxAllocSize]byte)(unsafe.Pointer(&p.ptr))[n.pageElementSize()*len(n.inodes):]
+	// 迭代每个内部节点
 	for i, item := range n.inodes {
 		_assert(len(item.key) > 0, "write: zero-length inode key")
 
 		// Write the page element.
 		if n.isLeaf {
+			// 找到索引 i 对应的节点元素的位置
 			elem := p.leafPageElement(uint16(i))
+			// 计算偏移量
 			elem.pos = uint32(uintptr(unsafe.Pointer(&b[0])) - uintptr(unsafe.Pointer(elem)))
+			// 设置其他属性
 			elem.flags = item.flags
 			elem.ksize = uint32(len(item.key))
 			elem.vsize = uint32(len(item.value))
@@ -236,6 +246,7 @@ func (n *node) write(p *page) {
 		}
 
 		// Write data for the element to the end of the page.
+		// 写入键值
 		copy(b[0:], item.key)
 		b = b[klen:]
 		copy(b[0:], item.value)
@@ -287,19 +298,23 @@ func (n *node) splitTwo(pageSize int) (*node, *node) {
 	threshold := int(float64(pageSize) * fillPercent)
 
 	// Determine split position and sizes of the two pages.
+	// 找到分离点
 	splitIndex, _ := n.splitIndex(threshold)
 
 	// Split node into two separate nodes.
 	// If there's no parent then we'll need to create one.
+	// 判定是否需要新建父节点
 	if n.parent == nil {
 		n.parent = &node{bucket: n.bucket, children: []*node{n}}
 	}
 
 	// Create a new node and add it to the parent.
+	// 创建分裂过后的新节点，并添加到父节点
 	next := &node{bucket: n.bucket, isLeaf: n.isLeaf, parent: n.parent}
 	n.parent.children = append(n.parent.children, next)
 
 	// Split inodes across two nodes.
+	// 完成分裂
 	next.inodes = n.inodes[splitIndex:]
 	n.inodes = n.inodes[:splitIndex]
 
@@ -336,6 +351,7 @@ func (n *node) splitIndex(threshold int) (index, sz int) {
 
 // spill writes the nodes to dirty pages and splits nodes as it goes.
 // Returns an error if dirty pages cannot be allocated.
+// 实际上执行的是分裂节点的操作
 func (n *node) spill() error {
 	var tx = n.bucket.tx
 	if n.spilled {
@@ -356,6 +372,7 @@ func (n *node) spill() error {
 	n.children = nil
 
 	// Split nodes into appropriate sizes. The first node will always be n.
+	// 将节点按照 pageSize 分裂成多个小节点，注意，此时得到的子节点都是内存中的节点，实际的物理内存中还没有完成分裂
 	var nodes = n.split(tx.db.pageSize)
 	for _, node := range nodes {
 		// Add node's page to the freelist if it's not new.
@@ -365,12 +382,14 @@ func (n *node) spill() error {
 		}
 
 		// Allocate contiguous space for the node.
+		// 为节点分配连续的实际物理磁盘空间
 		p, err := tx.allocate((node.size() / tx.db.pageSize) + 1)
 		if err != nil {
 			return err
 		}
 
 		// Write the node.
+		// 写回节点
 		if p.id >= tx.meta.pgid {
 			panic(fmt.Sprintf("pgid (%d) above high water mark (%d)", p.id, tx.meta.pgid))
 		}
@@ -406,6 +425,7 @@ func (n *node) spill() error {
 
 // rebalance attempts to combine the node with sibling nodes if the node fill
 // size is below a threshold or if there are not enough keys.
+// 实际上执行的是合并节点的操作
 func (n *node) rebalance() {
 	if !n.unbalanced {
 		return
@@ -416,14 +436,17 @@ func (n *node) rebalance() {
 	n.bucket.tx.stats.Rebalance++
 
 	// Ignore if node is above threshold (25%) and has enough keys.
+	// 如果节点的大小超过了 pageSize/4 并且满足内部节点的最小键数量的要求，则不需要执行重平衡
 	var threshold = n.bucket.tx.db.pageSize / 4
 	if n.size() > threshold && len(n.inodes) > n.minKeys() {
 		return
 	}
 
 	// Root node has special handling.
+	// 单独处理根节点
 	if n.parent == nil {
 		// If root node is a branch and only has one node then collapse it.
+		// 如果根节点只有一个单节点的分支，则将该分支提到根节点上
 		if !n.isLeaf && len(n.inodes) == 1 {
 			// Move root's child up.
 			child := n.bucket.node(n.inodes[0].pgid, n)
@@ -432,6 +455,7 @@ func (n *node) rebalance() {
 			n.children = child.children
 
 			// Reparent all child nodes being moved.
+			// 修正相关节点的父节点
 			for _, inode := range n.inodes {
 				if child, ok := n.bucket.nodes[inode.pgid]; ok {
 					child.parent = n
@@ -473,8 +497,11 @@ func (n *node) rebalance() {
 		// Reparent all child nodes being moved.
 		for _, inode := range target.inodes {
 			if child, ok := n.bucket.nodes[inode.pgid]; ok {
+				// 从之前的父节点的子节点列表中移除当前节点
 				child.parent.removeChild(child)
+				// 修正当前节点的父节点
 				child.parent = n
+				// 将当前节点加入新父节点的子节点列表中
 				child.parent.children = append(child.parent.children, child)
 			}
 		}

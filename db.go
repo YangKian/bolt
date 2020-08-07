@@ -183,12 +183,14 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 	// if !options.ReadOnly.
 	// The database file is locked using the shared lock (more than one process may
 	// hold a lock at the same time) otherwise (options.ReadOnly is set).
+	// 如果不是只读模式，则创建锁文件
 	if err := flock(db, mode, !db.readOnly, options.Timeout); err != nil {
 		_ = db.close()
 		return nil, err
 	}
 
 	// Default values for test hooks
+	// 初始化写文件的函数
 	db.ops.writeAt = db.file.WriteAt
 
 	// Initialize the database if it doesn't exist.
@@ -196,12 +198,15 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 		return nil, err
 	} else if info.Size() == 0 {
 		// Initialize new files with meta pages.
+		// 如果数据库不存在，则初始化数据库，分配了四个页，2个元数据页，1个freelist页，1个leafpage页
 		if err := db.init(); err != nil {
 			return nil, err
 		}
 	} else {
+		// 如果数据库已经存在
 		// Read the first meta page to determine the page size.
 		var buf [0x1000]byte
+		// 读取第0页（元数据页）来获取页面的大小
 		if _, err := db.file.ReadAt(buf[:], 0); err == nil {
 			m := db.pageInBuffer(buf[:], 0).meta()
 			if err := m.validate(); err != nil {
@@ -220,6 +225,7 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 	}
 
 	// Initialize page pool.
+	// 初始化 buffer pool
 	db.pagePool = sync.Pool{
 		New: func() interface{} {
 			return make([]byte, db.pageSize)
@@ -242,6 +248,7 @@ func Open(path string, mode os.FileMode, options *Options) (*DB, error) {
 
 // mmap opens the underlying memory-mapped file and initializes the meta references.
 // minsz is the minimum size that the new mmap can be.
+// 封装了操作系统的 mmap() 调用
 func (db *DB) mmap(minsz int) error {
 	db.mmaplock.Lock()
 	defer db.mmaplock.Unlock()
@@ -254,6 +261,7 @@ func (db *DB) mmap(minsz int) error {
 	}
 
 	// Ensure the size is at least the minimum size.
+	// 确定 mmap 的长度
 	var size = int(info.Size())
 	if size < minsz {
 		size = minsz
@@ -269,11 +277,13 @@ func (db *DB) mmap(minsz int) error {
 	}
 
 	// Unmap existing data before continuing.
+	// 取消对旧数据的 mmap
 	if err := db.munmap(); err != nil {
 		return err
 	}
 
 	// Memory-map the data file as a byte slice.
+	// 调用操作系统的 mmap() 将文件映射到内存
 	if err := mmap(db, size); err != nil {
 		return err
 	}
@@ -307,6 +317,7 @@ func (db *DB) munmap() error {
 // Returns an error if the new mmap size is greater than the max allowed.
 func (db *DB) mmapSize(size int) (int, error) {
 	// Double the size from 32KB until 1GB.
+	// 1GB 以下的大小采用加倍的方式快速增长
 	for i := uint(15); i <= 30; i++ {
 		if size <= 1<<i {
 			return 1 << i, nil
@@ -319,6 +330,7 @@ func (db *DB) mmapSize(size int) (int, error) {
 	}
 
 	// If larger than 1GB then grow by 1GB at a time.
+	// 当文件超过 1GB 时，每次调整 mmap 的大小是按 1GB 来增长
 	sz := int64(size)
 	if remainder := sz % int64(maxMmapStep); remainder > 0 {
 		sz += int64(maxMmapStep) - remainder
@@ -340,11 +352,14 @@ func (db *DB) mmapSize(size int) (int, error) {
 }
 
 // init creates a new database file and initializes its meta pages.
+// 创建一个新的数据库文件并初始化其元信息页
 func (db *DB) init() error {
 	// Set the page size to the OS page size.
+	// 页大小设置为操作系统页的大小
 	db.pageSize = os.Getpagesize()
 
 	// Create two meta pages on a buffer.
+	// 初始化两页元数据页
 	buf := make([]byte, db.pageSize*4)
 	for i := 0; i < 2; i++ {
 		p := db.pageInBuffer(buf[:], pgid(i))
@@ -364,18 +379,21 @@ func (db *DB) init() error {
 	}
 
 	// Write an empty freelist at page 3.
+	// 第三页设置为 freelist 页
 	p := db.pageInBuffer(buf[:], pgid(2))
 	p.id = pgid(2)
 	p.flags = freelistPageFlag
 	p.count = 0
 
 	// Write an empty leaf page at page 4.
+	// 第四页设置为 leafpage 页
 	p = db.pageInBuffer(buf[:], pgid(3))
 	p.id = pgid(3)
 	p.flags = leafPageFlag
 	p.count = 0
 
 	// Write the buffer to our data file.
+	// 刷盘
 	if _, err := db.ops.writeAt(buf, 0); err != nil {
 		return err
 	}
@@ -463,6 +481,7 @@ func (db *DB) Begin(writable bool) (*Tx, error) {
 	return db.beginTx()
 }
 
+// 开启一个读事务
 func (db *DB) beginTx() (*Tx, error) {
 	// Lock the meta pages while we initialize the transaction. We obtain
 	// the meta lock before the mmap lock because that's the order that the
@@ -795,7 +814,9 @@ func (db *DB) page(id pgid) *page {
 }
 
 // pageInBuffer retrieves a page reference from a given byte array based on the current page size.
+// 根据当前页面大小从给定的字节数组中检索页面引用
 func (db *DB) pageInBuffer(b []byte, id pgid) *page {
+	// id * db.pagesize 页编号乘以页面大小
 	return (*page)(unsafe.Pointer(&b[id*pgid(db.pageSize)]))
 }
 
@@ -997,6 +1018,7 @@ func (m *meta) copy(dest *meta) {
 }
 
 // write writes the meta onto a page.
+// 写回元数据
 func (m *meta) write(p *page) {
 	if m.root.root >= m.pgid {
 		panic(fmt.Sprintf("root bucket pgid (%d) above high water mark (%d)", m.root.root, m.pgid))

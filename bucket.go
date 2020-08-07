@@ -86,6 +86,7 @@ func (b *Bucket) Writable() bool {
 // Cursor creates a cursor associated with the bucket.
 // The cursor is only valid as long as the transaction is open.
 // Do not use a cursor after the transaction is closed.
+// 构造函数：创建一个关联到 bucket 的游标，游标只在事务打开期间有效
 func (b *Bucket) Cursor() *Cursor {
 	// Update transaction statistics.
 	b.tx.stats.CursorCount++
@@ -100,7 +101,9 @@ func (b *Bucket) Cursor() *Cursor {
 // Bucket retrieves a nested bucket by name.
 // Returns nil if the bucket does not exist.
 // The bucket instance is only valid for the lifetime of the transaction.
+// 根据名字来查找相应的 bucket，如果名字不存在，则返回 Nil
 func (b *Bucket) Bucket(name []byte) *Bucket {
+	// 先查缓存，如果有就直接返回
 	if b.buckets != nil {
 		if child := b.buckets[string(name)]; child != nil {
 			return child
@@ -109,6 +112,8 @@ func (b *Bucket) Bucket(name []byte) *Bucket {
 
 	// Move cursor to key.
 	c := b.Cursor()
+	// seek() 方法根据给定的名字进行查询，如果指定的桶不存在，则返回下一个桶
+	// 返回的 key 和 value 都是字节数组
 	k, v, flags := c.seek(name)
 
 	// Return nil if the key doesn't exist or it is not a bucket.
@@ -117,6 +122,7 @@ func (b *Bucket) Bucket(name []byte) *Bucket {
 	}
 
 	// Otherwise create a bucket and cache it.
+	// 找到了对应的桶，则加入缓存
 	var child = b.openBucket(v)
 	if b.buckets != nil {
 		b.buckets[string(name)] = child
@@ -140,6 +146,7 @@ func (b *Bucket) openBucket(value []byte) *Bucket {
 
 	// If this is a writable transaction then we need to copy the bucket entry.
 	// Read-only transactions can point directly at the mmap entry.
+	// 如果是写事务，则需要拷贝 bucket 的条目，如果是只读，则可以直接指向 mmap 的条目
 	if b.tx.writable && !unaligned {
 		child.bucket = &bucket{}
 		*child.bucket = *(*bucket)(unsafe.Pointer(&value[0]))
@@ -158,6 +165,11 @@ func (b *Bucket) openBucket(value []byte) *Bucket {
 // CreateBucket creates a new bucket at the given key and returns the new bucket.
 // Returns an error if the key already exists, if the bucket name is blank, or if the bucket name is too long.
 // The bucket instance is only valid for the lifetime of the transaction.
+// 使用给定的键来创建桶，如果键以及存在、键名为空或键名太长，返回 error
+// 创建桶的过程：
+// 1. 分配空间，写入根节点
+// 2. 以 key 为键，新分配的空间作为值，插入节点中
+// 3. 返回 key 对应的桶
 func (b *Bucket) CreateBucket(key []byte) (*Bucket, error) {
 	if b.tx.db == nil {
 		return nil, ErrTxClosed
@@ -185,6 +197,7 @@ func (b *Bucket) CreateBucket(key []byte) (*Bucket, error) {
 		rootNode:    &node{isLeaf: true},
 		FillPercent: DefaultFillPercent,
 	}
+	// 分配空间，写入头部
 	var value = bucket.write()
 
 	// Insert into node.
@@ -196,6 +209,7 @@ func (b *Bucket) CreateBucket(key []byte) (*Bucket, error) {
 	// to be treated as a regular, non-inline bucket for the rest of the tx.
 	b.page = nil
 
+	// 返回 key 对应的桶
 	return b.Bucket(key), nil
 }
 
@@ -214,6 +228,7 @@ func (b *Bucket) CreateBucketIfNotExists(key []byte) (*Bucket, error) {
 
 // DeleteBucket deletes a bucket at the given key.
 // Returns an error if the bucket does not exists, or if the key represents a non-bucket value.
+// 递归删除给定键对应的所有的桶和子桶，还需要删除缓存，释放分配的空间
 func (b *Bucket) DeleteBucket(key []byte) error {
 	if b.tx.db == nil {
 		return ErrTxClosed
@@ -404,7 +419,8 @@ func (b *Bucket) Stats() BucketStats {
 	}
 	b.forEachPage(func(p *page, depth int) {
 		if (p.flags & leafPageFlag) != 0 {
-			s.KeyN += int(p.count)
+			// 如果是叶子节点
+			s.KeyN += int(p.count) // 增加键值对的数量
 
 			// used totals the used bytes for the page
 			used := pageHeaderSize
@@ -525,15 +541,18 @@ func (b *Bucket) _forEachPageNode(pgid pgid, depth int, fn func(*page, *node, in
 // spill writes all the nodes for this bucket to dirty pages.
 func (b *Bucket) spill() error {
 	// Spill all child buckets first.
+	// 先对子 Buckets 进行分裂
 	for name, child := range b.buckets {
 		// If the child bucket is small enough and it has no child buckets then
 		// write it inline into the parent bucket's page. Otherwise spill it
 		// like a normal bucket and make the parent value a pointer to the page.
 		var value []byte
 		if child.inlineable() {
+			// 内联节点写入
 			child.free()
 			value = child.write()
 		} else {
+			// 子 Bucket 递归分裂
 			if err := child.spill(); err != nil {
 				return err
 			}
@@ -550,6 +569,7 @@ func (b *Bucket) spill() error {
 		}
 
 		// Update parent node.
+		// 更新对应节点的父节点
 		var c = b.Cursor()
 		k, _, flags := c.seek([]byte(name))
 		if !bytes.Equal([]byte(name), k) {
@@ -583,6 +603,7 @@ func (b *Bucket) spill() error {
 
 // inlineable returns true if a bucket is small enough to be written inline
 // and if it contains no subbuckets. Otherwise returns false.
+// 可内联的条件：桶大小足够小且桶中不再包含子桶
 func (b *Bucket) inlineable() bool {
 	var n = b.rootNode
 
@@ -613,9 +634,11 @@ func (b *Bucket) maxInlineBucketSize() int {
 }
 
 // write allocates and writes a bucket to a byte slice.
+// 分配一片 byte slice，写入桶的元数据
 func (b *Bucket) write() []byte {
 	// Allocate the appropriate size.
 	var n = b.rootNode
+	// 分配的数组的大小：桶头部 + 根节点的大小
 	var value = make([]byte, bucketHeaderSize+n.size())
 
 	// Write a bucket header.
@@ -631,19 +654,23 @@ func (b *Bucket) write() []byte {
 
 // rebalance attempts to balance all nodes.
 func (b *Bucket) rebalance() {
+	// 先合并当前 Bucket 中的所有节点
 	for _, n := range b.nodes {
 		n.rebalance()
 	}
+	// 在合并子 Bucket 中的节点
 	for _, child := range b.buckets {
 		child.rebalance()
 	}
 }
 
 // node creates a node from a page and associates it with a given parent.
+// 使用给定的页来生成一个结点
 func (b *Bucket) node(pgid pgid, parent *node) *node {
 	_assert(b.nodes != nil, "nodes map expected")
 
 	// Retrieve node if it's already been created.
+	// 先检查缓存，如果已经有一个该页的结点，则直接返回
 	if n := b.nodes[pgid]; n != nil {
 		return n
 	}
@@ -663,6 +690,7 @@ func (b *Bucket) node(pgid pgid, parent *node) *node {
 	}
 
 	// Read the page into the node and cache it.
+	// 使用指定的页来构造节点
 	n.read(p)
 	b.nodes[pgid] = n
 
@@ -735,8 +763,8 @@ type BucketStats struct {
 	LeafOverflowN   int // number of physical leaf overflow pages
 
 	// Tree statistics.
-	KeyN  int // number of keys/value pairs
-	Depth int // number of levels in B+tree
+	KeyN  int // number of keys/value pairs  键值对的数量
+	Depth int // number of levels in B+tree  B+Tree 的深度
 
 	// Page size utilization.
 	BranchAlloc int // bytes allocated for physical branch pages

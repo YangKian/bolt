@@ -46,15 +46,18 @@ func (tx *Tx) init(db *DB) {
 	tx.pages = nil
 
 	// Copy the meta page since it can be changed by the writer.
+	// 保存元数据
 	tx.meta = &meta{}
 	db.meta().copy(tx.meta)
 
 	// Copy over the root bucket.
+	// 保存根 bucket
 	tx.root = newBucket(tx)
 	tx.root.bucket = &bucket{}
 	*tx.root.bucket = tx.meta.root
 
 	// Increment the transaction id and add a page cache for writable transactions.
+	// 递增事务 id，并为可写事务设置页缓存
 	if tx.writable {
 		tx.pages = make(map[pgid]*page)
 		tx.meta.txid += txid(1)
@@ -152,6 +155,7 @@ func (tx *Tx) Commit() error {
 	// TODO(benbjohnson): Use vectorized I/O to write out dirty pages.
 
 	// Rebalance nodes which have had deletions.
+	// 对于执行过删除操作的节点执行合并
 	var startTime = time.Now()
 	tx.root.rebalance()
 	if tx.stats.Rebalance > 0 {
@@ -159,6 +163,7 @@ func (tx *Tx) Commit() error {
 	}
 
 	// spill data onto dirty pages.
+	// 对节点执行分裂
 	startTime = time.Now()
 	if err := tx.root.spill(); err != nil {
 		tx.rollback()
@@ -173,16 +178,19 @@ func (tx *Tx) Commit() error {
 
 	// Free the freelist and allocate new pages for it. This will overestimate
 	// the size of the freelist but not underestimate the size (which would be bad).
+	// 调整 freelist 页
 	tx.db.freelist.free(tx.meta.txid, tx.db.page(tx.meta.freelist))
 	p, err := tx.allocate((tx.db.freelist.size() / tx.db.pageSize) + 1)
 	if err != nil {
 		tx.rollback()
 		return err
 	}
+	// 将调整后的 freelist 写入磁盘
 	if err := tx.db.freelist.write(p); err != nil {
 		tx.rollback()
 		return err
 	}
+	// 修正元数据
 	tx.meta.freelist = p.id
 
 	// If the high water mark has moved up then attempt to grow the database.
@@ -194,6 +202,7 @@ func (tx *Tx) Commit() error {
 	}
 
 	// Write dirty pages to disk.
+	// 将所有的脏页写到磁盘中
 	startTime = time.Now()
 	if err := tx.write(); err != nil {
 		tx.rollback()
@@ -202,6 +211,7 @@ func (tx *Tx) Commit() error {
 
 	// If strict mode is enabled then perform a consistency check.
 	// Only the first consistency error is reported in the panic.
+	// 如果开启了 strict 模式，则执行一致性检查
 	if tx.db.StrictMode {
 		ch := tx.Check()
 		var errs []string
@@ -218,6 +228,7 @@ func (tx *Tx) Commit() error {
 	}
 
 	// Write meta to disk.
+	// 将元数据写回磁盘
 	if err := tx.writeMeta(); err != nil {
 		tx.rollback()
 		return err
@@ -225,9 +236,11 @@ func (tx *Tx) Commit() error {
 	tx.stats.WriteTime += time.Since(startTime)
 
 	// Finalize the transaction.
+	// 关闭事务
 	tx.close()
 
 	// Execute commit handlers now that the locks have been removed.
+	// 执行回调函数
 	for _, fn := range tx.commitHandlers {
 		fn()
 	}
@@ -251,7 +264,9 @@ func (tx *Tx) rollback() {
 		return
 	}
 	if tx.writable {
+		// 回滚 freelist
 		tx.db.freelist.rollback(tx.meta.txid)
+		// 加载之前的 freelist
 		tx.db.freelist.reload(tx.db.page(tx.db.meta().freelist))
 	}
 	tx.close()
@@ -471,6 +486,7 @@ func (tx *Tx) allocate(count int) (*page, error) {
 }
 
 // write writes any dirty pages to disk.
+// 执行写操作
 func (tx *Tx) write() error {
 	// Sort pages by id.
 	pages := make(pages, 0, len(tx.pages))
@@ -482,6 +498,7 @@ func (tx *Tx) write() error {
 	sort.Sort(pages)
 
 	// Write pages to disk in order.
+	// 按页顺序写入磁盘
 	for _, p := range pages {
 		size := (int(p.overflow) + 1) * tx.db.pageSize
 		offset := int64(p.id) * int64(tx.db.pageSize)

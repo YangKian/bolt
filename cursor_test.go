@@ -1,6 +1,7 @@
 package bolt_test
 
 import (
+	bolt "boltdb"
 	"bytes"
 	"encoding/binary"
 	"fmt"
@@ -11,7 +12,7 @@ import (
 	"testing"
 	"testing/quick"
 
-	"github.com/boltdb/bolt"
+	//"github.com/boltdb/bolt"
 )
 
 // Ensure that a cursor can return a reference to the bucket that created it.

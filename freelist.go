@@ -8,6 +8,7 @@ import (
 
 // freelist represents a list of all pages that are available for allocation.
 // It also tracks pages that have been freed but are still in use by open transactions.
+// 所有可分配的页，以及已经被释放但是仍旧被打开事务使用的页
 type freelist struct {
 	ids     []pgid          // all free and available free page ids.
 	pending map[txid][]pgid // mapping of soon-to-be free page ids by tx.
@@ -25,6 +26,7 @@ func newFreelist() *freelist {
 // size returns the size of the page after serialization.
 func (f *freelist) size() int {
 	n := f.count()
+	// 0xFFFF = 65535 = 2^16 - 1 = 64KB
 	if n >= 0xFFFF {
 		// The first element will be used to store the count. See freelist.write.
 		n++
@@ -59,11 +61,13 @@ func (f *freelist) copyall(dst []pgid) {
 		m = append(m, list...)
 	}
 	sort.Sort(m)
+	// 所有可用的页 id 和正在被使用的页 id 按顺序合并
 	mergepgids(dst, f.ids, m)
 }
 
 // allocate returns the starting page id of a contiguous list of pages of a given size.
 // If a contiguous block cannot be found then 0 is returned.
+// 从 freelist 的可用页数组 ids 中选出 n 页来分配使用
 func (f *freelist) allocate(n int) pgid {
 	if len(f.ids) == 0 {
 		return 0
@@ -71,11 +75,14 @@ func (f *freelist) allocate(n int) pgid {
 
 	var initial, previd pgid
 	for i, id := range f.ids {
+		// 遍历所有 freelist 中的页，找到足够大的页来分配
 		if id <= 1 {
+			// 前两页是元数据页
 			panic(fmt.Sprintf("invalid page allocation: %d", id))
 		}
 
 		// Reset initial page if this is not contiguous.
+		// 过滤掉不连续的页
 		if previd == 0 || id-previd != 1 {
 			initial = id
 		}
@@ -108,6 +115,7 @@ func (f *freelist) allocate(n int) pgid {
 
 // free releases a page and its overflow for a given transaction id.
 // If the page is already free then a panic will occur.
+// 将释放的页先放入到 pending 中，因为可能存在有别的事务还在访问这些页，避免重新分配这些页
 func (f *freelist) free(txid txid, p *page) {
 	if p.id <= 1 {
 		panic(fmt.Sprintf("cannot free page 0 or 1: %d", p.id))
@@ -144,6 +152,7 @@ func (f *freelist) release(txid txid) {
 }
 
 // rollback removes the pages from a given pending tx.
+// 移除设计的页及其在 freelist 中的缓存
 func (f *freelist) rollback(txid txid) {
 	// Remove page ids from cache.
 	for _, id := range f.pending[txid] {

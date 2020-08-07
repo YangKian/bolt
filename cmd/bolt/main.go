@@ -1,6 +1,7 @@
 package main
 
 import (
+	bolt "boltdb"
 	"bytes"
 	"encoding/binary"
 	"errors"
@@ -19,7 +20,7 @@ import (
 	"unicode/utf8"
 	"unsafe"
 
-	"github.com/boltdb/bolt"
+	//"github.com/boltdb/bolt"
 )
 
 var (

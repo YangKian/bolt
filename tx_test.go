@@ -1,6 +1,7 @@
 package bolt_test
 
 import (
+	bolt "boltdb"
 	"bytes"
 	"errors"
 	"fmt"
@@ -8,7 +9,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/boltdb/bolt"
+	//"github.com/boltdb/bolt"
 )
 
 // Ensure that committing a closed transaction returns an error.

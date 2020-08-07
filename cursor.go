@@ -28,11 +28,14 @@ func (c *Cursor) Bucket() *Bucket {
 // First moves the cursor to the first item in the bucket and returns its key and value.
 // If the bucket is empty then a nil key and value are returned.
 // The returned key and value are only valid for the life of the transaction.
+// 返回当前 Bucket 中的第一个元素
 func (c *Cursor) First() (key []byte, value []byte) {
 	_assert(c.bucket.tx.db != nil, "tx closed")
-	c.stack = c.stack[:0]
-	p, n := c.bucket.pageNode(c.bucket.root)
-	c.stack = append(c.stack, elemRef{page: p, node: n, index: 0})
+	c.stack = c.stack[:0] // 清空栈
+	p, n := c.bucket.pageNode(c.bucket.root) // 返回根节点所属的页以及该页在内存中对应的节点
+	c.stack = append(c.stack, elemRef{page: p, node: n, index: 0}) // 根节点入栈，index 为 0 表示从第一个子节点开始遍历
+	// 栈是 LIFO 的，栈中的最后一页就是栈顶，即 first 访问栈顶页的第一个叶子结点
+	// B+Tree 的中序遍历：左 —— 中 —— 右，先移动到最左边叶子节点的第一个元素，即得到了树中最小的元素
 	c.first()
 
 	// If we land on an empty page then move to the next value.
@@ -52,6 +55,7 @@ func (c *Cursor) First() (key []byte, value []byte) {
 // Last moves the cursor to the last item in the bucket and returns its key and value.
 // If the bucket is empty then a nil key and value are returned.
 // The returned key and value are only valid for the life of the transaction.
+// 返回当前 Bucket 中的最后一个元素
 func (c *Cursor) Last() (key []byte, value []byte) {
 	_assert(c.bucket.tx.db != nil, "tx closed")
 	c.stack = c.stack[:0]
@@ -70,6 +74,7 @@ func (c *Cursor) Last() (key []byte, value []byte) {
 // Next moves the cursor to the next item in the bucket and returns its key and value.
 // If the cursor is at the end of the bucket then a nil key and value are returned.
 // The returned key and value are only valid for the life of the transaction.
+// 游标后移，返回下一个元素
 func (c *Cursor) Next() (key []byte, value []byte) {
 	_assert(c.bucket.tx.db != nil, "tx closed")
 	k, v, flags := c.next()
@@ -169,22 +174,27 @@ func (c *Cursor) seek(seek []byte) (key []byte, value []byte, flags uint32) {
 }
 
 // first moves the cursor to the first leaf element under the last page in the stack.
+// 找到栈中最后一个页面的第一个叶子节点
 func (c *Cursor) first() {
 	for {
 		// Exit when we hit a leaf page.
+		// 栈顶已经是叶子页，则直接返回
 		var ref = &c.stack[len(c.stack)-1]
 		if ref.isLeaf() {
 			break
 		}
 
 		// Keep adding pages pointing to the first element to the stack.
+		// 根据 index 找到要访问的节点，获取该节点的页 id
 		var pgid pgid
 		if ref.node != nil {
 			pgid = ref.node.inodes[ref.index].pgid
 		} else {
 			pgid = ref.page.branchPageElement(uint16(ref.index)).pgid
 		}
+		// 根据 pgid 获取对应的页和内存中的节点
 		p, n := c.bucket.pageNode(pgid)
+		// 入栈，index 继续设置为 0，即从节点所在页中的最左边元素开始遍历
 		c.stack = append(c.stack, elemRef{page: p, node: n, index: 0})
 	}
 }
@@ -207,6 +217,7 @@ func (c *Cursor) last() {
 		}
 		p, n := c.bucket.pageNode(pgid)
 
+		// 因为要找的是页中的最后一个元素，因此 index 设置为 nextRef.count() - 1
 		var nextRef = elemRef{page: p, node: n}
 		nextRef.index = nextRef.count() - 1
 		c.stack = append(c.stack, nextRef)
@@ -220,7 +231,10 @@ func (c *Cursor) next() (key []byte, value []byte, flags uint32) {
 		// Attempt to move over one element until we're successful.
 		// Move up the stack as we hit the end of each page in our stack.
 		var i int
+		// 自顶向下遍历栈
 		for i = len(c.stack) - 1; i >= 0; i-- {
+			// 对于栈中的每个节点，检查当前是否已经完全遍历过该页中的所有元素
+			// 如果没有，则将该页的 index + 1，移动到页中的下一个元素
 			elem := &c.stack[i]
 			if elem.index < elem.count()-1 {
 				elem.index++
@@ -380,7 +394,7 @@ func (c *Cursor) node() *node {
 type elemRef struct {
 	page  *page
 	node  *node
-	index int
+	index int // 记录访问到当前页中的第几个元素
 }
 
 // isLeaf returns whether the ref is pointing at a leaf page/node.
